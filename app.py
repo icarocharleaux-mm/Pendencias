@@ -1,26 +1,48 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import requests
+import io
 
-st.set_page_config(page_title="Dashboard de Pendências", layout="wide")
+st.set_page_config(page_title="Dashboard Online - Filiais", layout="wide")
 
 @st.cache_data
-def carregar_dados():
-    # Carrega pulando as 10 primeiras linhas (cabeçalho na 11)
-    df = pd.read_excel("pendencias.xlsx", skiprows=10)
+def carregar_dados_online():
+    # URL original do SharePoint
+    url_sharepoint = "https://diaslog-my.sharepoint.com/:x:/g/personal/icaro_nascimento_mmdeliverytransportes_com_br/IQAsd1mwKCDrSpWC-4kACmmnAYDjJXVif9cFArG3rRXBD44?download=1"
     
-    # Padroniza os nomes das colunas (minúsculo e sem espaços sobrando)
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    # Cabeçalhos para simular um navegador real
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
     
-    # Remove linhas totalmente vazias (baseado na coluna filial)
-    df = df.dropna(how='all', subset=['filial']) 
-    
-    return df
+    try:
+        # Fazendo a requisição simulando o navegador
+        response = requests.get(url_sharepoint, headers=headers)
+        response.raise_for_status() # Verifica se houve erro de conexão
+        
+        # Transforma o conteúdo baixado em um fluxo de dados que o Pandas entende
+        conteudo_arquivo = io.BytesIO(response.content)
+        
+        # Carrega pulando as 10 primeiras linhas (cabeçalho na 11)
+        df = pd.read_excel(conteudo_arquivo, skiprows=10)
+        
+        # Padroniza nomes das colunas
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        
+        # Remove linhas totalmente vazias (baseado na coluna filial)
+        df = df.dropna(how='all', subset=['filial']) 
+        
+        return df
+    except Exception as e:
+        st.error(f"Erro ao conectar com a planilha online: {e}")
+        return pd.DataFrame()
 
-try:
-    df = carregar_dados()
+# Chamada da função
+df = carregar_dados_online()
 
-    # Mapeamos os nomes EXATOS conforme a leitura do Pandas
+if not df.empty:
+    # Mapeamos os nomes conforme detectado anteriormente
     col_filial = 'filial'
     col_status = 'status das ações'
 
@@ -33,56 +55,44 @@ try:
     status_lista = df[col_status].dropna().unique()
     sel_status = st.sidebar.multiselect("Status", options=status_lista, default=status_lista)
 
-    # Aplica os filtros no DataFrame
+    # Aplica os filtros
     df_f = df[(df[col_filial].isin(sel_filiais)) & (df[col_status].isin(sel_status))]
 
-    # --- Tela Principal ---
-    st.title("📊 Gestão de Pendências - Filiais")
+    # --- Interface Principal ---
+    st.title("📊 Gestão de Pendências Online - Filiais")
     
-    # Métricas Dinâmicas (Cards no topo)
+    # Cards de Indicadores
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total de Ações", len(df_f))
     
-    # astype(str) garante que não dará erro se houver campos vazios na planilha
-    # 'oncluid|oncluíd' busca com ou sem acento
+    # Lógica de contagem por status (com busca flexível de texto)
     c2.metric("✅ Concluído", len(df_f[df_f[col_status].astype(str).str.contains('oncluid|oncluíd', case=False, na=False)]))
     c3.metric("🚨 Atrasado", len(df_f[df_f[col_status].astype(str).str.contains('trasado', case=False, na=False)]))
     c4.metric("⚠️ Alerta", len(df_f[df_f[col_status].astype(str).str.contains('lerta', case=False, na=False)]))
 
     st.markdown("---")
     
-    # --- Gráficos ---
+    # Gráficos
     col_graf1, col_graf2 = st.columns(2)
     
     with col_graf1:
         st.subheader("Pendências por Unidade")
-        if not df_f.empty:
-            fig_filial = px.bar(df_f[col_filial].value_counts().reset_index(), 
-                         x=col_filial, y='count', text_auto=True,
-                         labels={col_filial: 'Filial', 'count': 'Quantidade'},
-                         color_discrete_sequence=['#004d99'])
-            fig_filial.update_layout(xaxis_title="", yaxis_title="")
-            st.plotly_chart(fig_filial, use_container_width=True)
-        else:
-            st.info("Nenhum dado com os filtros atuais.")
+        fig_filial = px.bar(df_f[col_filial].value_counts().reset_index(), 
+                            x=col_filial, y='count', text_auto=True,
+                            labels={col_filial: 'Filial', 'count': 'Quantidade'},
+                            color_discrete_sequence=['#004d99'])
+        st.plotly_chart(fig_filial, use_container_width=True)
 
     with col_graf2:
         st.subheader("Distribuição do Status")
-        if not df_f.empty:
-            df_status = df_f[col_status].value_counts().reset_index()
-            df_status.columns = ['Status', 'Quantidade']
-            fig_status = px.pie(df_status, names='Status', values='Quantidade', hole=0.4)
-            st.plotly_chart(fig_status, use_container_width=True)
-        else:
-            st.info("Nenhum dado com os filtros atuais.")
+        df_status_counts = df_f[col_status].value_counts().reset_index()
+        df_status_counts.columns = ['Status', 'Quantidade']
+        fig_status = px.pie(df_status_counts, names='Status', values='Quantidade', hole=0.4)
+        st.plotly_chart(fig_status, use_container_width=True)
 
-    # --- Tabela detalhada ---
+    # Tabela detalhada
     st.markdown("---")
     st.subheader("📋 Detalhamento das Ações")
-    
-    # Mostra a tabela filtrada (apenas as colunas mais importantes para a visualização, se quiser)
-    # Se quiser mostrar tudo, basta deixar st.dataframe(df_f, hide_index=True)
     st.dataframe(df_f, use_container_width=True, hide_index=True)
-
-except Exception as e:
-    st.error(f"Erro ao processar a planilha: {e}")
+else:
+    st.warning("Aguardando carregamento dos dados da planilha...")
