@@ -9,7 +9,7 @@ st.set_page_config(page_title="Dashboard Online - Filiais", layout="wide")
 @st.cache_data
 def carregar_dados_online():
     # URL original do SharePoint
-    url_sharepoint = "https://diaslog-my.sharepoint.com/:x:/g/personal/icaro_nascimento_mmdeliverytransportes_com_br/IQAsd1mwKCDrSpWC-4kACmmnAYDjJXVif9cFArG3rRXBD44?download=1"
+    url_sharepoint = "https://1drv.ms/x/c/6b2fcbf5f5526df1/IQDHu-mMrzrbSYX2fOkM5i79AfcCy_fd8M69E6xE2kQQ1IY?download=1"
     
     # Cabeçalhos para simular um navegador real
     headers = {
