@@ -149,30 +149,78 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── Carregamento de dados ──────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
-def carregar_dados():
-    url = "https://1drv.ms/x/c/6b2fcbf5f5526df1/IQDHu-mMrzrbSYX2fOkM5i79AfcCy_fd8M69E6xE2kQQ1IY?download=1"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        r = requests.get(url, headers=headers, timeout=20)
-        r.raise_for_status()
-        df = pd.read_excel(io.BytesIO(r.content), skiprows=10)
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        df = df.dropna(how="all")
-        # Garantir tipos de data
-        for col in ["DATA", "QUANDO", "DATA CONCLUSÃO"]:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
-        if "STATUS DAS AÇÕES" in df.columns:
-            df["STATUS DAS AÇÕES"] = df["STATUS DAS AÇÕES"].astype(str).str.strip().str.upper()
-        if "PRIORIDADE" in df.columns:
-            df["PRIORIDADE"] = df["PRIORIDADE"].astype(str).str.strip().str.upper()
-        return df, datetime.now()
-    except Exception as e:
-        st.error(f"Erro ao carregar planilha: {e}")
-        return pd.DataFrame(), None
+ARQUIVO_LOCAL = "pendencias.xlsx"
 
-df_raw, ts_carga = carregar_dados()
+def _processar_excel(conteudo_bytes):
+    df = pd.read_excel(io.BytesIO(conteudo_bytes), skiprows=10)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.dropna(how="all")
+    for col in ["DATA", "QUANDO", "DATA CONCLUSÃO"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    if "STATUS DAS AÇÕES" in df.columns:
+        df["STATUS DAS AÇÕES"] = df["STATUS DAS AÇÕES"].astype(str).str.strip().str.upper()
+    if "PRIORIDADE" in df.columns:
+        df["PRIORIDADE"] = df["PRIORIDADE"].astype(str).str.strip().str.upper()
+    return df
+
+@st.cache_data(ttl=300)
+def carregar_online(url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+    return r.content
+
+@st.cache_data
+def carregar_local():
+    import os
+    if os.path.exists(ARQUIVO_LOCAL):
+        with open(ARQUIVO_LOCAL, "rb") as f:
+            return f.read()
+    return None
+
+# --- Sidebar: fonte de dados ---
+with st.sidebar:
+    st.markdown(f"<h3 style='color:{TEAL_PRIMARY};text-transform:uppercase;letter-spacing:.1em;'>Fonte de Dados</h3>", unsafe_allow_html=True)
+    url_input = st.text_input(
+        "URL da planilha (OneDrive/SharePoint)",
+        placeholder="Cole aqui o link com ?download=1",
+        help="Gere um novo link de download direto no OneDrive e cole aqui.",
+    )
+    arquivo_upload = st.file_uploader("Ou envie o arquivo .xlsx", type=["xlsx"])
+    st.markdown("---")
+
+# --- Lógica de carregamento com fallbacks ---
+df_raw = pd.DataFrame()
+ts_carga = None
+fonte_dados = ""
+
+if arquivo_upload is not None:
+    try:
+        df_raw = _processar_excel(arquivo_upload.read())
+        ts_carga = datetime.now()
+        fonte_dados = f"arquivo enviado: {arquivo_upload.name}"
+    except Exception as e:
+        st.error(f"Erro ao ler arquivo enviado: {e}")
+
+elif url_input.strip():
+    try:
+        conteudo = carregar_online(url_input.strip())
+        df_raw = _processar_excel(conteudo)
+        ts_carga = datetime.now()
+        fonte_dados = "URL informada"
+    except Exception as e:
+        st.warning(f"Não foi possível carregar pela URL: {e}")
+
+if df_raw.empty:
+    conteudo_local = carregar_local()
+    if conteudo_local:
+        try:
+            df_raw = _processar_excel(conteudo_local)
+            ts_carga = datetime.now()
+            fonte_dados = f"arquivo local ({ARQUIVO_LOCAL})"
+        except Exception as e:
+            st.error(f"Erro ao ler arquivo local: {e}")
 
 # ── Hero header ───────────────────────────────────────────────────────────────
 ts_str = ts_carga.strftime("%d/%m/%Y  %H:%M") if ts_carga else "—"
@@ -182,6 +230,9 @@ st.markdown(f"""
   <small>Última atualização: {ts_str} &nbsp;·&nbsp; diaslog.com.br</small>
 </div>
 """, unsafe_allow_html=True)
+
+if not fonte_dados:
+    st.info("Nenhuma fonte de dados ativa. Cole a URL da planilha ou envie o arquivo .xlsx na barra lateral.")
 
 if df_raw.empty:
     st.warning("Aguardando dados da planilha...")
@@ -226,6 +277,9 @@ with st.sidebar:
     if st.button("🔄 Recarregar dados"):
         st.cache_data.clear()
         st.rerun()
+
+    if fonte_dados:
+        st.caption(f"Fonte: {fonte_dados}")
 
 # ── Filtragem ─────────────────────────────────────────────────────────────────
 mask = (
