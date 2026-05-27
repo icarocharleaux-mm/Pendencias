@@ -402,10 +402,13 @@ with col_g4:
             text_auto=True, color_discrete_sequence=[TEAL_MEDIUM],
         )
         fig_resp.update_traces(marker_line_width=0)
-        fig_resp.update_layout(**PLOTLY_LAYOUT, showlegend=False,
-                                xaxis_title=None, yaxis_title=None,
-                                yaxis=dict(autorange="reversed",
-                                           gridcolor="rgba(255,255,255,0.08)"))
+        layout_resp = {**PLOTLY_LAYOUT,
+                       "showlegend": False,
+                       "xaxis_title": None,
+                       "yaxis_title": None,
+                       "yaxis": {**PLOTLY_LAYOUT.get("yaxis", {}),
+                                 "autorange": "reversed"}}
+        fig_resp.update_layout(**layout_resp)
         st.plotly_chart(fig_resp, use_container_width=True)
 
 # ── Tabela detalhada ──────────────────────────────────────────────────────────
