@@ -2,4 +2,3 @@ pandas
 streamlit
 plotly
 openpyxl
-yaxis
