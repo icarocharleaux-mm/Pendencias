@@ -149,6 +149,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── Carregamento de dados ──────────────────────────────────────────────────────
+URL_PADRAO    = "https://1drv.ms/x/c/6b2fcbf5f5526df1/IQDUu6abClz1TaxKoOFMsGzRAZ9EeqagjmL0UE7-KNygSWc?e=Roqh7k&download=1"
 ARQUIVO_LOCAL = "pendencias.xlsx"
 
 def _processar_excel(conteudo_bytes):
@@ -164,10 +165,10 @@ def _processar_excel(conteudo_bytes):
         df["PRIORIDADE"] = df["PRIORIDADE"].astype(str).str.strip().str.upper()
     return df
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)          # recarrega a cada 5 min automaticamente
 def carregar_online(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=20)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    r = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
     r.raise_for_status()
     return r.content
 
@@ -179,40 +180,41 @@ def carregar_local():
             return f.read()
     return None
 
-# --- Sidebar: fonte de dados ---
+# --- Sidebar: upload de emergência + recarregar ---
 with st.sidebar:
-    st.markdown(f"<h3 style='color:{TEAL_PRIMARY};text-transform:uppercase;letter-spacing:.1em;'>Fonte de Dados</h3>", unsafe_allow_html=True)
-    url_input = st.text_input(
-        "URL da planilha (OneDrive/SharePoint)",
-        placeholder="Cole aqui o link com ?download=1",
-        help="Gere um novo link de download direto no OneDrive e cole aqui.",
+    arquivo_upload = st.file_uploader(
+        "Substituir arquivo manualmente",
+        type=["xlsx"],
+        help="Use apenas se o OneDrive estiver indisponível.",
     )
-    arquivo_upload = st.file_uploader("Ou envie o arquivo .xlsx", type=["xlsx"])
     st.markdown("---")
 
-# --- Lógica de carregamento com fallbacks ---
-df_raw = pd.DataFrame()
-ts_carga = None
+# --- Carregamento automático com fallbacks ---
+df_raw     = pd.DataFrame()
+ts_carga   = None
 fonte_dados = ""
 
 if arquivo_upload is not None:
+    # Prioridade 1: upload manual na sidebar
     try:
         df_raw = _processar_excel(arquivo_upload.read())
         ts_carga = datetime.now()
-        fonte_dados = f"arquivo enviado: {arquivo_upload.name}"
+        fonte_dados = f"upload manual · {arquivo_upload.name}"
     except Exception as e:
         st.error(f"Erro ao ler arquivo enviado: {e}")
 
-elif url_input.strip():
+if df_raw.empty:
+    # Prioridade 2: OneDrive (URL fixa, cache 5 min)
     try:
-        conteudo = carregar_online(url_input.strip())
+        conteudo = carregar_online(URL_PADRAO)
         df_raw = _processar_excel(conteudo)
         ts_carga = datetime.now()
-        fonte_dados = "URL informada"
+        fonte_dados = "OneDrive (atualização automática)"
     except Exception as e:
-        st.warning(f"Não foi possível carregar pela URL: {e}")
+        st.sidebar.warning(f"OneDrive indisponível: {e}")
 
 if df_raw.empty:
+    # Prioridade 3: arquivo local como último recurso
     conteudo_local = carregar_local()
     if conteudo_local:
         try:
@@ -230,9 +232,6 @@ st.markdown(f"""
   <small>Última atualização: {ts_str} &nbsp;·&nbsp; diaslog.com.br</small>
 </div>
 """, unsafe_allow_html=True)
-
-if not fonte_dados:
-    st.info("Nenhuma fonte de dados ativa. Cole a URL da planilha ou envie o arquivo .xlsx na barra lateral.")
 
 if df_raw.empty:
     st.warning("Aguardando dados da planilha...")
@@ -274,12 +273,13 @@ with st.sidebar:
         sel_resp = []
 
     st.markdown("---")
-    if st.button("🔄 Recarregar dados"):
+    if st.button("🔄 Recarregar dados", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
     if fonte_dados:
-        st.caption(f"Fonte: {fonte_dados}")
+        st.caption(f"📡 {fonte_dados}")
+    if ts_carga:
+        st.caption(f"🕐 {ts_carga.strftime('%d/%m/%Y %H:%M')}")
 
 # ── Filtragem ─────────────────────────────────────────────────────────────────
 mask = (
@@ -409,32 +409,49 @@ with col_g4:
         st.plotly_chart(fig_resp, use_container_width=True)
 
 # ── Tabela detalhada ──────────────────────────────────────────────────────────
+st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>Detalhamento das Ações</div>", unsafe_allow_html=True)
 
-# Colunas que fazem sentido exibir (sem CPF/dados pessoais)
+# Colunas para exibição (sem dados pessoais — LGPD)
 cols_exibir = [c for c in [
     COL_FILIAL, COL_ASSUNTO, COL_ACAO, COL_RESP,
     COL_PRIORIDADE, COL_QUANDO, COL_CONCLUSAO, COL_STATUS,
-    "DIAS ATRASO", COL_FOLLOWUP
+    "DIAS ATRASO", COL_FOLLOWUP,
 ] if c and c in df.columns]
 
 df_exibir = df[cols_exibir].copy()
 
-# Colorização por status
+# Rótulos de coluna mais legíveis
+RENAME = {
+    COL_FILIAL:    "Filial",
+    COL_ASSUNTO:   "Assunto",
+    COL_ACAO:      "Ação",
+    COL_RESP:      "Responsável",
+    COL_PRIORIDADE:"Prioridade",
+    COL_QUANDO:    "Prazo Previsto",
+    COL_CONCLUSAO: "Data Conclusão",
+    COL_STATUS:    "Status",
+    "DIAS ATRASO": "Dias em Atraso",
+    COL_FOLLOWUP:  "Follow Up",
+}
+df_exibir = df_exibir.rename(columns={k: v for k, v in RENAME.items() if k in df_exibir.columns})
+
+# Colorização de linhas por status
 def colorir_linha(row):
-    s = row.get(COL_STATUS, "")
-    base = ""
+    s = str(row.get("Status", "")).upper()
     if s == "ATRASADO":
-        base = f"background-color: rgba(196,122,119,0.18);"
+        return ["background-color: rgba(196,122,119,0.22);"] * len(row)
     elif s == "ALERTA":
-        base = f"background-color: rgba(232,184,75,0.15);"
+        return ["background-color: rgba(232,184,75,0.18);"] * len(row)
     elif s == "CONCLUÍDO":
-        base = f"background-color: rgba(45,197,180,0.12);"
-    return [base] * len(row)
+        return ["background-color: rgba(45,197,180,0.13);"] * len(row)
+    return [""] * len(row)
 
 styled = df_exibir.style.apply(colorir_linha, axis=1)
 
-st.dataframe(styled, use_container_width=True, hide_index=True)
+# Altura dinâmica: mostra todas as linhas sem scroll interno excessivo
+altura_tabela = min(600, max(300, 38 + len(df_exibir) * 35))
+st.dataframe(styled, use_container_width=True, hide_index=True, height=altura_tabela)
 
 # ── Export ────────────────────────────────────────────────────────────────────
 buffer = io.BytesIO()
