@@ -149,7 +149,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── Carregamento de dados ──────────────────────────────────────────────────────
-URL_PADRAO    = "https://1drv.ms/x/c/6b2fcbf5f5526df1/IQDUu6abClz1TaxKoOFMsGzRAZ9EeqagjmL0UE7-KNygSWc?e=Roqh7k&download=1"
+URL_PADRAO    = "https://1drv.ms/x/c/6b2fcbf5f5526df1/IQDUu6abClz1TaxKoOFMsGzRAZ9EeqagjmL0UE7-KNygSWc?download=1"
 ARQUIVO_LOCAL = "pendencias.xlsx"
 
 def _processar_excel(conteudo_bytes):
