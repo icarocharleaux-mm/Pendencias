@@ -27,14 +27,16 @@ COR_STATUS = {
 ORDEM_STATUS = ["VENCIDO", "PENDENTE", "EM ANÁLISE", "REGULARIZADO"]
 
 # ── Colunas ───────────────────────────────────────────────────────────────────
-COL_FILIAL     = "FILIAL"
-COL_TIPO_DOC   = "TIPO DE DOCUMENTO"
-COL_NUM_DOC    = "Nº DOCUMENTO"
-COL_EMISSAO    = "DATA DE EMISSÃO"
-COL_VENCIMENTO = "DATA DE VENCIMENTO"
-COL_STATUS     = "STATUS"
-COL_RESP       = "RESPONSÁVEL"
-COL_OBS        = "OBSERVAÇÕES"
+COL_FILIAL      = "FILIAL"
+COL_CATEGORIA   = "CATEGORIA"
+COL_ASSUNTO     = "ASSUNTO"
+COL_NUM_DOC     = "Nº DOCUMENTO"
+COL_EMISSAO     = "DATA DE EMISSÃO/SOLICITAÇÃO"
+COL_VENCIMENTO  = "DATA DE VENCIMENTO"
+COL_PRAZO_INFRA = "PRAZO (INFRA)"
+COL_STATUS      = "STATUS"
+COL_RESP        = "RESPONSÁVEL"
+COL_OBS         = "OBSERVAÇÕES"
 
 st.set_page_config(
     page_title="Controle de Documentos · Dias+",
@@ -173,15 +175,13 @@ def _processar_excel(conteudo_bytes):
     df = pd.concat(df_list, ignore_index=True)
 
     # ── Preenche vazios para não sumirem nos filtros ─────────────────────────
-    if COL_FILIAL in df.columns:
-        df[COL_FILIAL] = df[COL_FILIAL].fillna("NÃO INFORMADO").astype(str).str.strip()
-    if COL_TIPO_DOC in df.columns:
-        df[COL_TIPO_DOC] = df[COL_TIPO_DOC].fillna("NÃO INFORMADO").astype(str).str.strip()
-    if COL_RESP in df.columns:
-        df[COL_RESP] = df[COL_RESP].fillna("SEM RESPONSÁVEL").astype(str).str.strip()
+    for col, fill in [(COL_FILIAL, "NÃO INFORMADO"), (COL_CATEGORIA, "NÃO INFORMADO"),
+                      (COL_ASSUNTO, "NÃO INFORMADO"), (COL_RESP, "SEM RESPONSÁVEL")]:
+        if col in df.columns:
+            df[col] = df[col].fillna(fill).astype(str).str.strip()
 
     # ── Datas com dayfirst=True (padrão BR DD/MM/YYYY) ───────────────────────
-    for col in [COL_EMISSAO, COL_VENCIMENTO]:
+    for col in [COL_EMISSAO, COL_VENCIMENTO, COL_PRAZO_INFRA]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
@@ -202,15 +202,24 @@ def _processar_excel(conteudo_bytes):
     else:
         df[COL_STATUS] = "PENDENTE"
 
-    # ── Auto-calcula VENCIDO pelo prazo ──────────────────────────────────────
-    if COL_VENCIMENTO in df.columns:
-        mask_vencido = (
-            df[COL_VENCIMENTO].notna() &
-            (df[COL_VENCIMENTO] < HOJE) &
-            (df[COL_STATUS] != "REGULARIZADO")
+    # ── Prazo efetivo: INFRA usa PRAZO (INFRA), demais usam DATA DE VENCIMENTO
+    df["_PRAZO"] = df[COL_VENCIMENTO] if COL_VENCIMENTO in df.columns else pd.NaT
+    if COL_PRAZO_INFRA in df.columns and COL_CATEGORIA in df.columns:
+        mask_infra = (
+            df[COL_CATEGORIA].str.upper().str.contains("INFRA", na=False) &
+            df[COL_PRAZO_INFRA].notna()
         )
-        df.loc[mask_vencido, COL_STATUS] = "VENCIDO"
-        df["DIAS_VENC"] = (df[COL_VENCIMENTO] - HOJE).dt.days
+        df.loc[mask_infra, "_PRAZO"] = df.loc[mask_infra, COL_PRAZO_INFRA]
+
+    # ── Auto-calcula VENCIDO pelo prazo efetivo ──────────────────────────────
+    mask_vencido = (
+        df["_PRAZO"].notna() &
+        (df["_PRAZO"] < HOJE) &
+        (df[COL_STATUS] != "REGULARIZADO")
+    )
+    df.loc[mask_vencido, COL_STATUS] = "VENCIDO"
+    df["DIAS_VENC"] = (df["_PRAZO"] - HOJE).dt.days
+    df = df.drop(columns=["_PRAZO"])
 
     return df
 
@@ -295,8 +304,14 @@ with st.sidebar:
     filiais = sorted(df_raw[COL_FILIAL].dropna().unique())
     sel_filiais = st.multiselect("Filial", filiais, default=filiais)
 
-    tipos = sorted(df_raw[COL_TIPO_DOC].dropna().unique()) if COL_TIPO_DOC in df_raw.columns else []
-    sel_tipos = st.multiselect("Tipo de Documento", tipos, default=tipos)
+    if COL_CATEGORIA in df_raw.columns:
+        cats = sorted(df_raw[COL_CATEGORIA].dropna().unique())
+        sel_cats = st.multiselect("Categoria", cats, default=cats)
+    else:
+        sel_cats = []
+
+    assuntos = sorted(df_raw[COL_ASSUNTO].dropna().unique()) if COL_ASSUNTO in df_raw.columns else []
+    sel_assuntos = st.multiselect("Assunto", assuntos, default=assuntos)
 
     status_opts = [s for s in ORDEM_STATUS if s in df_raw[COL_STATUS].unique()]
     sel_status = st.multiselect("Status", status_opts, default=status_opts)
@@ -322,8 +337,10 @@ with st.sidebar:
 
 # ── Filtragem ─────────────────────────────────────────────────────────────────
 mask = df_raw[COL_FILIAL].isin(sel_filiais) & df_raw[COL_STATUS].isin(sel_status)
-if sel_tipos:
-    mask &= df_raw[COL_TIPO_DOC].isin(sel_tipos)
+if sel_cats and COL_CATEGORIA in df_raw.columns:
+    mask &= df_raw[COL_CATEGORIA].isin(sel_cats)
+if sel_assuntos and COL_ASSUNTO in df_raw.columns:
+    mask &= df_raw[COL_ASSUNTO].isin(sel_assuntos)
 if sel_resp and COL_RESP in df_raw.columns:
     mask &= df_raw[COL_RESP].isin(sel_resp)
 
@@ -361,27 +378,33 @@ LAYOUT = dict(
     yaxis=dict(gridcolor="rgba(255,255,255,0.07)", linecolor="rgba(255,255,255,0.12)"),
 )
 
-# ── Seção 1: Visão por Filial ─────────────────────────────────────────────────
-st.markdown("<div class='section-title'>Visão por Filial</div>", unsafe_allow_html=True)
+STATUS_PEND = ["VENCIDO", "PENDENTE", "EM ANÁLISE"]
+
+# ── Seção 1: Ranking de Pendências por Filial ─────────────────────────────────
+st.markdown("<div class='section-title'>Ranking de Pendências por Filial</div>", unsafe_allow_html=True)
 col_g1, col_g2 = st.columns([3, 2])
 
 with col_g1:
-    df_cross = (
-        df.groupby([COL_FILIAL, COL_STATUS])
-        .size().reset_index(name="QTD")
+    df_rank = (
+        df[df[COL_STATUS].isin(STATUS_PEND)]
+        .groupby([COL_FILIAL, COL_STATUS]).size().reset_index(name="QTD")
     )
-    fig_stack = px.bar(
-        df_cross, x=COL_FILIAL, y="QTD", color=COL_STATUS,
-        text_auto=True,
-        color_discrete_map=COR_STATUS,
-        category_orders={COL_STATUS: ORDEM_STATUS},
-        labels={COL_FILIAL: "", "QTD": "Documentos"},
-        title="Documentos por Filial e Status",
+    ordem_filiais = (
+        df_rank.groupby(COL_FILIAL)["QTD"].sum()
+        .sort_values(ascending=True).index.tolist()
     )
-    fig_stack.update_traces(marker_line_width=0)
-    fig_stack.update_layout(**LAYOUT, barmode="stack",
-                             legend=dict(orientation="h", y=-0.18, title_text=""))
-    st.plotly_chart(fig_stack, use_container_width=True)
+    fig_rank = px.bar(
+        df_rank, x="QTD", y=COL_FILIAL, color=COL_STATUS, orientation="h",
+        text_auto=True, color_discrete_map=COR_STATUS,
+        category_orders={COL_FILIAL: ordem_filiais, COL_STATUS: STATUS_PEND},
+        labels={COL_FILIAL: "", "QTD": "Pendências"},
+        title="Ranking de Pendências por Filial",
+    )
+    fig_rank.update_traces(marker_line_width=0)
+    fig_rank.update_layout(**LAYOUT, barmode="stack",
+                            legend=dict(orientation="h", y=-0.08, title_text=""),
+                            height=max(350, len(ordem_filiais) * 28))
+    st.plotly_chart(fig_rank, use_container_width=True)
 
 with col_g2:
     df_st = df[COL_STATUS].value_counts().reindex(ORDEM_STATUS).dropna().reset_index()
@@ -400,53 +423,64 @@ with col_g2:
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
-# ── Seção 2: Análise por Tipo de Documento ────────────────────────────────────
-st.markdown("<div class='section-title'>Análise por Tipo de Documento</div>", unsafe_allow_html=True)
+# ── Seção 2: Análise por Categoria e Assunto ──────────────────────────────────
+st.markdown("<div class='section-title'>Análise por Categoria</div>", unsafe_allow_html=True)
 col_g3, col_g4 = st.columns(2)
 
 with col_g3:
-    # Top documentos com pendências/vencimentos (excluindo regularizados)
-    df_pend = (
-        df[df[COL_STATUS] != "REGULARIZADO"]
-        .groupby(COL_TIPO_DOC).size().reset_index(name="QTD")
-        .sort_values("QTD", ascending=True).tail(12)
-    )
-    fig_top = px.bar(
-        df_pend, x="QTD", y=COL_TIPO_DOC, orientation="h",
-        text_auto=True, color_discrete_sequence=[SALMON],
-        title="Documentos com Pendência (Top 12)",
-    )
-    fig_top.update_traces(marker_line_width=0)
-    fig_top.update_layout(**LAYOUT, showlegend=False,
-                           xaxis_title=None, yaxis_title=None)
-    st.plotly_chart(fig_top, use_container_width=True)
+    if COL_CATEGORIA in df.columns:
+        df_cat = (
+            df[df[COL_STATUS].isin(STATUS_PEND)]
+            .groupby([COL_CATEGORIA, COL_STATUS]).size().reset_index(name="QTD")
+        )
+        fig_cat = px.bar(
+            df_cat, x=COL_CATEGORIA, y="QTD", color=COL_STATUS,
+            text_auto=True, color_discrete_map=COR_STATUS,
+            category_orders={COL_STATUS: STATUS_PEND},
+            labels={COL_CATEGORIA: "", "QTD": "Pendências"},
+            title="Pendências por Categoria",
+        )
+        fig_cat.update_traces(marker_line_width=0)
+        fig_cat.update_layout(**LAYOUT, barmode="group",
+                               legend=dict(orientation="h", y=-0.15, title_text=""))
+        st.plotly_chart(fig_cat, use_container_width=True)
 
 with col_g4:
-    # Cobertura por tipo: % regularizado
-    df_cob = (
-        df.groupby([COL_TIPO_DOC, COL_STATUS])
-        .size().reset_index(name="QTD")
-    )
-    df_total_tipo = df.groupby(COL_TIPO_DOC).size().reset_index(name="TOTAL")
-    df_reg_tipo = (
-        df_cob[df_cob[COL_STATUS] == "REGULARIZADO"]
-        .rename(columns={"QTD": "REG"})[[COL_TIPO_DOC, "REG"]]
-    )
-    df_cobertura = df_total_tipo.merge(df_reg_tipo, on=COL_TIPO_DOC, how="left").fillna(0)
-    df_cobertura["PCT"] = (df_cobertura["REG"] / df_cobertura["TOTAL"] * 100).round(1)
-    df_cobertura = df_cobertura.sort_values("PCT", ascending=True).tail(12)
+    if COL_ASSUNTO in df.columns:
+        df_ass = (
+            df[df[COL_STATUS].isin(STATUS_PEND)]
+            .groupby(COL_ASSUNTO).size().reset_index(name="QTD")
+            .sort_values("QTD", ascending=True).tail(12)
+        )
+        fig_ass = px.bar(
+            df_ass, x="QTD", y=COL_ASSUNTO, orientation="h",
+            text_auto=True, color_discrete_sequence=[SALMON],
+            title="Assuntos com mais pendências (Top 12)",
+        )
+        fig_ass.update_traces(marker_line_width=0)
+        fig_ass.update_layout(**LAYOUT, showlegend=False,
+                               xaxis_title=None, yaxis_title=None)
+        st.plotly_chart(fig_ass, use_container_width=True)
 
-    fig_cob = px.bar(
-        df_cobertura, x="PCT", y=COL_TIPO_DOC, orientation="h",
-        text_auto=True, color_discrete_sequence=[TEAL_MEDIUM],
-        title="% Regularizado por Tipo (Top 12)",
-    )
-    fig_cob.update_traces(marker_line_width=0,
-                          texttemplate="%{x:.0f}%", textposition="outside")
-    layout_cob = {**LAYOUT, "xaxis": {**LAYOUT["xaxis"], "range": [0, 110]}}
-    fig_cob.update_layout(**layout_cob, showlegend=False,
-                           xaxis_title=None, yaxis_title=None)
-    st.plotly_chart(fig_cob, use_container_width=True)
+st.markdown("<hr>", unsafe_allow_html=True)
+
+# ── Seção 3: % Regularizado por Filial ───────────────────────────────────────
+st.markdown("<div class='section-title'>Cobertura de Regularização por Filial</div>", unsafe_allow_html=True)
+df_tot_f = df.groupby(COL_FILIAL).size().reset_index(name="TOTAL")
+df_reg_f = df[df[COL_STATUS] == "REGULARIZADO"].groupby(COL_FILIAL).size().reset_index(name="REG")
+df_cob_f = df_tot_f.merge(df_reg_f, on=COL_FILIAL, how="left").fillna(0)
+df_cob_f["PCT"] = (df_cob_f["REG"] / df_cob_f["TOTAL"] * 100).round(1)
+df_cob_f = df_cob_f.sort_values("PCT", ascending=True)
+fig_pct = px.bar(
+    df_cob_f, x="PCT", y=COL_FILIAL, orientation="h",
+    text_auto=True, color_discrete_sequence=[TEAL_MEDIUM],
+    title="% Documentos Regularizados por Filial",
+)
+fig_pct.update_traces(marker_line_width=0, texttemplate="%{x:.0f}%", textposition="outside")
+layout_pct = {**LAYOUT, "xaxis": {**LAYOUT["xaxis"], "range": [0, 110]}}
+fig_pct.update_layout(**layout_pct, showlegend=False, xaxis_title=None, yaxis_title=None,
+                       height=max(350, len(df_cob_f) * 28))
+st.plotly_chart(fig_pct, use_container_width=True)
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -467,9 +501,9 @@ if "DIAS_VENC" in df.columns:
     with ca:
         st.markdown(f"**Vencendo nos próximos {dias_alerta} dias** — {len(df_alerta)} documento(s)")
         if not df_alerta.empty:
-            cols_al = [c for c in [COL_FILIAL, COL_TIPO_DOC, COL_VENCIMENTO, "DIAS_VENC", COL_STATUS, COL_RESP] if c in df_alerta.columns]
+            cols_al = [c for c in [COL_FILIAL, COL_ASSUNTO, COL_VENCIMENTO, "DIAS_VENC", COL_STATUS, COL_RESP] if c in df_alerta.columns]
             df_al_show = df_alerta[cols_al].rename(columns={
-                COL_FILIAL: "Filial", COL_TIPO_DOC: "Tipo de Documento",
+                COL_FILIAL: "Filial", COL_ASSUNTO: "Tipo de Documento",
                 COL_VENCIMENTO: "Vence em", "DIAS_VENC": "Dias",
                 COL_STATUS: "Status", COL_RESP: "Responsável",
             })
@@ -480,9 +514,9 @@ if "DIAS_VENC" in df.columns:
     with cb:
         st.markdown(f"**Documentos Vencidos** — {len(df_vencidos_tab)} documento(s)")
         if not df_vencidos_tab.empty:
-            cols_venc = [c for c in [COL_FILIAL, COL_TIPO_DOC, COL_VENCIMENTO, "DIAS_VENC", COL_RESP] if c in df_vencidos_tab.columns]
+            cols_venc = [c for c in [COL_FILIAL, COL_ASSUNTO, COL_VENCIMENTO, "DIAS_VENC", COL_RESP] if c in df_vencidos_tab.columns]
             df_venc_show = df_vencidos_tab[cols_venc].sort_values("DIAS_VENC").rename(columns={
-                COL_FILIAL: "Filial", COL_TIPO_DOC: "Tipo de Documento",
+                COL_FILIAL: "Filial", COL_ASSUNTO: "Tipo de Documento",
                 COL_VENCIMENTO: "Venceu em", "DIAS_VENC": "Dias (negativo)",
                 COL_RESP: "Responsável",
             })
@@ -498,7 +532,7 @@ st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>Detalhamento Completo</div>", unsafe_allow_html=True)
 
 COLS_TABELA = [c for c in [
-    COL_FILIAL, COL_TIPO_DOC, COL_NUM_DOC,
+    COL_FILIAL, COL_ASSUNTO, COL_NUM_DOC,
     COL_EMISSAO, COL_VENCIMENTO, "DIAS_VENC",
     COL_STATUS, COL_RESP, COL_OBS,
 ] if c and c in df.columns]
@@ -506,7 +540,7 @@ COLS_TABELA = [c for c in [
 df_tab = df[COLS_TABELA].copy()
 df_tab = df_tab.rename(columns={
     COL_FILIAL:     "Filial",
-    COL_TIPO_DOC:   "Tipo de Documento",
+    COL_ASSUNTO:   "Tipo de Documento",
     COL_NUM_DOC:    "Nº Documento",
     COL_EMISSAO:    "Emissão",
     COL_VENCIMENTO: "Vencimento",
